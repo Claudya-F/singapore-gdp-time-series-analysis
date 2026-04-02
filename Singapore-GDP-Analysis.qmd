@@ -1,0 +1,139 @@
+---
+title: "Singapore GDP Growth Time Series Analysis"
+author: "Claudya Fong"
+format: html
+editor: visual
+---
+
+# 1. Introduction
+
+This project analyses Singapore’s GDP growth using time series methods in R, including STL decomposition and ARIMA/ETS modelling. The objective is to understand trend behaviour, evaluate model suitability, and produce short-term forecasts.
+
+# 2. Data Preparation
+
+```{r}
+library(fabletools)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(tsibble)
+library(fpp3)
+
+data <- read_csv("M015631.csv", skip = 10) |>
+  na.omit ()
+
+GDP_long <- data |>
+  pivot_longer(
+    cols = -1,
+    names_to = "Quarter",
+    values_to = "GDP"
+  )
+
+GDP_long$GDP <- as.numeric(GDP_long$GDP)
+GR <- GDP_long %>%
+  mutate(Quarter = yearquarter(Quarter)) %>%
+  as_tsibble(index = Quarter)
+```
+
+# 3. Exploratory Analysis
+
+```{r}
+GR |> autoplot(GDP) +
+  labs(
+     y = "Growth Rate (%)",
+     x = "Time (Quarter)",
+  title = "Singapore GDP Growth Rate"
+  ) 
+```
+
+Since the series is YoY-based, seasonality is expected to be reduced, which aligns with the weak seasonal component observed.
+
+Overall, Singapore’s GDP growth rate shows a mild downward trend over time. Several sharp declines are visible during periods of economic disruption, most notably around 2020 Q1 during the COVID-19 shock.
+
+```{r}
+lambda <- GR |> features(GDP, guerrero) |>
+  dplyr::pull(lambda_guerrero) 
+GR |> autoplot(box_cox(GDP, lambda))
+```
+
+To assess whether variance-stabilising transformation was needed, the Guerrero method was applied. The suggested Box-Cox parameter was 1.174, which is close to 1, indicating that transformation is not necessary.
+
+```{r}
+dcmp <- GR |>
+  model(stl = STL((GDP) ~ season(window = "periodic"),
+                  robust = TRUE))
+components(dcmp) |> autoplot()
+```
+
+The STL decomposition shows a mild downward trend over time. The seasonal component is weak and relatively stable, which is consistent with the expectation that a YoY series contains limited seasonal variation. The remainder appears largely random, suggesting that most systematic movement has been captured.
+
+# 4. Modelling
+
+```{r}
+Fit <- GR |>
+  model(
+    auto_ARIMA = ARIMA((GDP), stepwise = FALSE, approx = FALSE), 
+    auto_ETS = ETS(GDP)
+    )
+```
+
+```{r}
+glance(Fit) |> arrange(AIC)
+```
+
+ARIMA is more suitable as the series shows weak seasonality and relies primarily on autocorrelation structure rather than trend smoothing.
+
+This is supported by the model selection criteria. ARIMA appears preferable because it provides a better trade-off between model fit and complexity than ETS. Proven by lower AIC, AICc, and other indicators.
+
+```{r}
+Fit |> 
+  select(auto_ARIMA) |>
+  report()
+```
+
+The ARIMA model suggests one order of differencing (d = 1), indicating the original series is non-stationary.
+
+```{r}
+Fit |>
+  select(auto_ARIMA) |>
+  gg_tsresiduals() 
+```
+
+The residuals do not appear normally distributed and show left skewness. Clear outliers are also visible around 2020 Q1, likely reflecting the COVID-19 shock.
+
+```{r}
+Fit |> 
+  select(auto_ARIMA, auto_ETS) |> 
+  augment() |>
+  features(.innov, ljung_box, lag = 24)
+```
+
+Although ARIMA has the lowest AIC, Ljung-Box results indicate residual autocorrelation, suggesting model inadequacy and potential for improvement.
+
+Therefore, the selected ARIMA model should be interpreted with caution, as its residuals still contain structure not fully captured by the model.
+
+# 5. Forecasting
+
+```{r}
+EGR <- GR |> 
+  model(
+    auto_ARIMA = ARIMA((GDP), stepwise = FALSE, approx = FALSE))|> 
+  forecast(h = 24, level = c(80, 95))
+
+```
+
+```{r}
+EGR|>
+  autoplot(GR) +
+  labs(
+     y = "Growth Rate (%)",
+     x = "Time (Quarter)",  
+     title = "Singapore GDP Growth Rate") + 
+  coord_cartesian(xlim = yearquarter(c("2010 Q1", "2030 Q1")))
+```
+
+The forecasts suggest a short-term rebound in growth followed by stabilization, indicating cyclical recovery rather than sustained long-term acceleration.
+
+# 6. Conclusion
+
+The analysis indicates a gradual slowdown in GDP growth with significant disruption during COVID-19. While ARIMA provides the best fit among the models considered, diagnostic results suggest remaining autocorrelation, indicating potential for further refinement. Forecasts suggest short-term recovery followed by stabilization.
